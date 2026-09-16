@@ -17,6 +17,7 @@ _deps/
 .luau-lsp/
 
 # OS / Editor
+.directory
 .DS_Store
 Thumbs.db
 *.tmp
