@@ -1,0 +1,8 @@
+# Pinned Roblox toolchain (install via https://github.com/LPGhatguy/aftman)
+# Run `aftman install` once per machine. CI installs the same versions.
+[tools]
+rojo = "rojo-rbx/rojo@7.5.1"
+wally = "UpliftGames/wally@0.3.2"
+stylua = "JohnnyMorganz/StyLua@2.0.2"
+selene = "Kampfkarren/selene@0.27.1"
+luau-lsp = "JohnnyMorganz/luau-lsp@1.36.0"

@@ -1,0 +1,38 @@
+# Roblox / Rojo / Luau
+.build/
+.sourcemap.json
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+local*.project.json
+
+# Wally / Aftman / Rojo tool installs
+.wally/
+Packages/
+DevPackages/
+_deps/
+
+# Luau LSP
+.luau-lsp/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# Zed / Neovim / VSCode (local only, keep shared settings if added under .zed/ etc.)
+.zed/tasks.json
+*.swp
+*.swo
+*~
+.vscode/settings.json
+.idea/
+
+# Env / Secrets - NEVER commit these
+.env
+.env.*
+*.pem
+*.key
+config.local.*

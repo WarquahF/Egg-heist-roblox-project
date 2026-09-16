@@ -1,0 +1,31 @@
+stages:
+  - lint
+  - test
+
+variables:
+  # Keep CI editor/platform independent; Roblox Studio steps stay manual.
+  FF_USE_FASTZIP: "true"
+
+fmt:check:
+  stage: lint
+  image: ghcr.io/rojo-rbx/rojo:7.5.1
+  script:
+    - echo "TODO: run StyLua + Selene once aftman tools are vendored in CI image"
+    - test -f default.project.json
+    - test -f src/shared/init.meta.json || test -d src/shared
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# Placeholder for TestEZ-in-Studio tests.
+# Luau unit tests under tests/ are pure logic (EggStateMachine) and can run
+# in Studio via TestEZ; headless runs are a future TODO (see DEVELOPMENT.md).
+unit:placeholder:
+  stage: test
+  image: alpine:3.20
+  script:
+    - echo "See DEVELOPMENT.md > Testing. Studio TestEZ run required for Beta."
+    - test -f src/shared/EggStateMachine.luau
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
