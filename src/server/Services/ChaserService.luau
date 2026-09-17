@@ -11,16 +11,32 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ChaserConfig = require(Shared:WaitForChild("Config"):WaitForChild("Chasers"))
+local ValidationRules = require(Shared:WaitForChild("ValidationRules"))
 
 local ChaserService = {}
 -- EggId -> UserId (nil = idle). Keyed by EGG so the relation stays obvious.
-ChaserService._targets: { [string]: number? } = {}
-ChaserService._npcs: { [string]: Model } = {}
+ChaserService._targets = {} :: { [string]: number? }
+ChaserService._npcs = {} :: { [string]: Model }
+ChaserService._deps = nil :: any
 
-function ChaserService.Init() end
+-- Read-only link to EggService (Chaser never mutates eggs; Egg never requires
+-- Chaser). Lets the follow loop re-verify target == carrier every tick.
+function ChaserService.Init(deps: { EggService: any }?)
+	ChaserService._deps = deps
+end
 
 -- Called ONLY from ServerMain wiring of EggService.Claimed. Never from proximity.
+-- Trust-but-verify: the egg's recorded carrier must equal the claimed player,
+-- otherwise the signal is stale and the target is NOT set.
 function ChaserService.SetTargetToCarrier(player: Player, eggId: string)
+	local deps = ChaserService._deps
+	if deps ~= nil and deps.EggService ~= nil then
+		local egg = deps.EggService.Get(eggId)
+		local carrier = if egg then egg.CarrierUserId else nil
+		if carrier ~= player.UserId then
+			return
+		end
+	end
 	ChaserService._targets[eggId] = player.UserId
 end
 
@@ -54,6 +70,21 @@ function ChaserService.BindNpc(eggId: string, npc: Model)
 	end
 end
 
+-- Current carrier per EggService, or nil. Single read path for the sweep.
+-- Falls back to the stored target when no verifier is wired (e.g. unit tests
+-- calling Init() with no deps), preserving the previous behavior exactly.
+function ChaserService._carrierOf(eggId: string): number?
+	local deps = ChaserService._deps
+	if deps == nil or deps.EggService == nil then
+		return ChaserService._targets[eggId]
+	end
+	local egg = deps.EggService.Get(eggId)
+	if egg == nil then
+		return nil
+	end
+	return egg.CarrierUserId
+end
+
 function ChaserService._returnHome(npc: Model)
 	-- TODO(Human): store per-chaser home CFrame and path back to it.
 	local humanoid = npc:FindFirstChildOfClass("Humanoid")
@@ -76,16 +107,26 @@ function ChaserService.Start()
 	end)
 
 	-- Minimal follow loop: 4 Hz server tick, carrier ONLY. No nearest-player logic.
+	-- Every tick re-verifies target == egg carrier (Scenario E/F sweep): any
+	-- divergence clears the target instead of chasing a stale player.
 	-- TODO(Human): replace with pathfinding + leash + stun/escape rules.
 	task.spawn(function()
 		while true do
 			task.wait(0.25)
 			for eggId, userId in pairs(ChaserService._targets) do
-				if userId == nil then
+				if not ValidationRules.ShouldChase(userId, ChaserService._carrierOf(eggId)) then
+					-- Covers: deliver/reset already cleared the carrier, carrier
+					-- left (Scenario E/F), or a stale/exploited target value.
+					ChaserService.ClearTarget(eggId)
 					continue
 				end
+				assert(userId ~= nil, "ShouldChase passed so a target exists")
 				local npc = ChaserService._npcs[eggId]
 				local targetPlayer = Players:GetPlayerByUserId(userId)
+				if targetPlayer == nil then
+					ChaserService.ClearTarget(eggId)
+					continue
+				end
 				local humanoid = if npc then npc:FindFirstChildOfClass("Humanoid") else nil
 				local root = if npc then npc:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
 				local targetRoot = if targetPlayer and targetPlayer.Character
