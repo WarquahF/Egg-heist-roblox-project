@@ -5,12 +5,15 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local EggConfig = require(Shared:WaitForChild("Config"):WaitForChild("Eggs"))
 local RewardPools = require(Shared:WaitForChild("Config"):WaitForChild("Rewards"))
 local RemoteNames = require(Shared:WaitForChild("RemoteNames"))
+local ValidationRules = require(Shared:WaitForChild("ValidationRules"))
 
 local HatchService = {}
-HatchService._deps: any = nil
+HatchService._deps = nil :: any
+HatchService._lastHatchAt = {} :: { [number]: number }
 
 function HatchService.Init(deps: {
 	PlayerDataService: any,
@@ -52,41 +55,59 @@ local function _rollReward(poolId: string): any?
 	}
 end
 
-function HatchService.RequestHatch(player: Player, eggId: string): boolean
-	if typeof(eggId) ~= "string" or eggId == "" then
+-- Phase 3: hatching is valid ONLY for the player who delivered the egg,
+-- to their own plot. The reward is rolled server-side; the client sends
+-- nothing but the egg id. Every rejection leaves state untouched.
+function HatchService.RequestHatch(player: Player, eggId: any): boolean
+	local id = ValidationRules.SanitizeEggId(eggId)
+	if id == nil then
 		return false
 	end
-	local egg = HatchService._deps.EggService.Get(eggId)
-	if egg == nil or egg.State ~= "DELIVERED" then
-		return false -- nothing to hatch: reject (covers "hatch without egg")
+	local now = os.clock()
+	if now - (HatchService._lastHatchAt[player.UserId] or 0) < Constants.HATCH_COOLDOWN_SECONDS then
+		return false -- Scenario G: spam collapses to one attempt per cooldown
 	end
-	local cfg = EggConfig[eggId]
+	HatchService._lastHatchAt[player.UserId] = now
+
+	local egg = HatchService._deps.EggService.Get(id)
+	local state = if egg then egg.State else nil
+	local deliveredBy = if egg then egg.DeliveredByUserId else nil
+	local deliveredPlot = if egg then egg.DeliveredPlotId else nil
+	local playerPlot = HatchService._deps.PlotService.GetPlotForPlayer(player)
+	if egg == nil or not ValidationRules.CanHatch(player.UserId, state, deliveredBy, deliveredPlot, playerPlot) then
+		-- Covers: nonexistent egg, hatch-before-delivery, cross-player hatch
+		-- (Scenario C), already-HATCHED / double hatch (Scenario D).
+		return false
+	end
+	local cfg = EggConfig[id]
 	if cfg == nil then
 		return false
 	end
 
-	-- TODO(Human): verify the delivered egg sits in THIS player's plot incubator.
 	local reward = _rollReward((cfg :: any).HatchPoolId)
 	if reward == nil then
 		return false
 	end
 
+	-- NOTE: coin payout curve is a human economy decision; Beta grants the
+	-- collectible only. Do not invent currency here.
 	local data = HatchService._deps.PlayerDataService.GetOrDefault(player)
-	data.Coins += 0 -- Beta: coin payout curve is a human economy decision.
 	data.EggsHatched += 1
 	HatchService._deps.PlayerDataService.AddReward(player, reward)
-	HatchService._deps.EggService.MarkHatched(eggId)
+	HatchService._deps.EggService.MarkHatched(id)
 
 	HatchService._deps.Remotes.Get(RemoteNames.InventoryUpdated):FireClient(player, data.Inventory)
 	return true
 end
 
 function HatchService.Start()
-	HatchService._deps.Remotes.Get(RemoteNames.RequestHatch).OnServerEvent:Connect(
-		function(player: Player, eggId: any)
-			HatchService.RequestHatch(player, eggId)
-		end
-	)
+	HatchService._deps.Remotes.Get(RemoteNames.RequestHatch).OnServerEvent:Connect(function(player: Player, eggId: any)
+		HatchService.RequestHatch(player, eggId)
+	end)
+
+	game:GetService("Players").PlayerRemoving:Connect(function(player: Player)
+		HatchService._lastHatchAt[player.UserId] = nil
+	end)
 end
 
 return HatchService
