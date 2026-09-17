@@ -28,7 +28,7 @@ See `DEVELOPMENT.md` for architecture, how-to guides, and testing.
 2. Serve: `rojo serve default.project.json`
 3. In Roblox Studio (Windows/macOS): connect the Rojo plugin to `localhost:34872`.
 4. Playtest in Studio with 2–4 players (Test tab → Clients and Servers) for the Beta loop.
-5. Lint/format before pushing: `stylua src tests` and `selene src tests`.
+5. Lint/format before pushing: `stylua --check src tests` and `selene src tests`.
 
 ## Beta loop status
 

@@ -42,6 +42,9 @@ command bar firing forged remotes — all must reject with no state change)
 - [ ] A fires `RequestTrain` from across the map (not at own pad) → rejected, no XP
 - [ ] A with no plot (full server) fires train/deliver/hatch → all rejected
 - [ ] Forged payloads (`nil`, numbers, tables, `""`, 65+ char strings) → rejected, no errors
+- [ ] Invalid egg ID (`RequestTakeEgg("Nope")`, unknown IDs) → rejected, no state change
+- [ ] Invalid plot situation (server full, joining player gets no plot) → train/deliver/hatch all rejected, no errors
+- [ ] Missing player data (fresh join, DataStore offline/session-only) → defaults apply, loop still playable
 - [ ] Chaser keeps following A when B stands closer, after deliver goes idle and
   NEVER re-acquires A or B on its own (leave + rejoin while targeted also clears)
 

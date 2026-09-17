@@ -70,6 +70,42 @@ Wiring (in `ServerMain.server.luau`): `EggService.Claimed → ChaserService.SetT
 require cycle between Egg and Chaser. Add new cross-service links the same way:
 expose a signal, connect it in `ServerMain`, never `require` sideways.
 
+Gameplay contracts (no duplication — each row has exactly ONE owner):
+
+```text
+EggService         registration, claiming, carrying, delivery, state, carrier info
+PlotService        assignment, ownership, release, ownership queries
+TrainingService    training requests, cooldowns, XP + movement progression
+ChaserService      activation, carrier targeting, target cleanup, lifecycle
+HatchService       hatch validation, consuming delivered eggs, rolling rewards,
+                   adding rewards to the server inventory
+PlayerDataService  loading, saving, defaults, persistence safety
+```
+
+Stable IDs (code depends on THESE, never on model internals or object paths):
+
+```text
+EggId     "CommonEgg"      config key in Eggs.luau + EggId attribute on the part
+PlotId    "Plot_1"         config entry in Plots.luau + Plots/<PlotId> folder
+ChaserId  "Chaser_Common"  config key in Chasers.luau + ChaserId attribute on NPC
+RewardId  "Creator_001"    config entry in Rewards.luau (fictional placeholder)
+```
+
+Display strings (`DisplayName`, prompt text) are art-safe renames: logic keys off
+the IDs above. The placeholder world builds from these IDs; the object designer
+replaces the Models later keeping the same IDs/attributes, with zero service changes.
+
+Client/server contract (see also §6):
+
+```text
+CLIENT = REQUEST + PRESENTATION   (input, UI, prompts, effects, action requests)
+SERVER = VALIDATION + GAME STATE  (ownership, state, rewards, speed, data)
+```
+
+The client must NOT decide egg/plot ownership, rewards, speed, egg state,
+delivery/hatch success, currency, or inventory. If a new feature needs the client
+to know something, the server broadcasts it; the client never computes it.
+
 ---
 
 ## 4. Egg state machine
@@ -182,6 +218,16 @@ around the pins; update `aftman.toml` deliberately if you outgrow them.
 - Headless (Linux, no Studio): the pure modules are dependency-free, so
   `lune run` executes the same expectations — 67 assertions green at last check.
   Studio TestEZ remains the gate for the in-engine suite.
+- Which is which (do not confuse them):
+
+```text
+PURE LOGIC (headless OK)        STUDIO / ENGINE (Studio only)
+src/shared/EggStateMachine      everything under src/server, src/client
+src/shared/ValidationRules      TestEZ specs executing service behavior
+```
+
+  Headless proves the decision tables; it does NOT replace multiplayer
+  playtesting (timing, replication, character physics only exist in Studio).
 - Manual Beta: `docs/BETA_CHECKLIST.md` — single player, 2–4 players, edge cases
   (leave-while-carrying, double-claim, spam, far interact, hatch-with-nothing)
   plus the Security section (cross-player deliver/hatch, double hatch, stale
@@ -214,6 +260,19 @@ in §3 above. New ownership questions go in `ValidationRules` FIRST, with specs.
 ## 10. How to contribute (GitLab)
 
 - Branch from `main`: `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`.
+  Never develop directly on `main` for gameplay work; suggested layout:
+
+```text
+main
+│
+├── feature/gameplay-loop
+├── feature/egg-system
+├── feature/training
+├── feature/hatching
+└── feature/ui
+```
+
+  One branch per workstream, one focused commit per step, one MR per branch.
 - One focused commit per step (see `README` history), e.g.
   `feat: add egg state model`, `test: add egg state tests`. Never one giant commit.
 - Push, open a Merge Request, fill in: what loop step it touches, how you
@@ -237,3 +296,39 @@ Monetization, gamepasses, dev products, trading, PvP, pets, clans, leaderboards
 (beyond placeholders), quests, dailies, battle passes, economy tuning, matchmaking,
 voice, real creator content, final art/animations, big UI. See the Beta checklist:
 if it is not on the loop Join→Plot→Train→Steal→Chase→Escape→Return→Hatch, it waits.
+
+---
+
+## 13. Code-first development & Studio handoff
+
+The source repository is the source of truth. Studio is the runtime.
+
+```text
+LINUX                              WINDOWS/macOS
+Edit Luau (Zed/Neovim)               │
+  ↓                                  │
+stylua --check / selene / lune       │
+  ↓                                  │
+Commit → GitLab  ───────────────────→ Pull repository
+                                     Open Roblox Studio
+                                     Rojo plugin → connect localhost:34872
+                                     Playtest (checklist)
+                                     Record bugs/results → GitLab
+```
+
+Rules:
+
+- Permanent code changes belong in `src/` and go through Git. A temporary
+  Studio-side tweak for debugging must never become an undocumented second
+  version — port it back to `src/` or discard it.
+- Linux needs NO Studio for: editing, formatting, linting, pure-logic tests,
+  Git/GitLab, config, docs. Studio is required ONLY for sync, playtesting,
+  engine debugging, and publishing.
+- Studio handoff per session: pull latest `main`, `rojo serve` on Linux,
+  connect plugin, run the checklist section you own, paste Output errors +
+  repro steps into the GitLab issue/MR. Bugs found in Studio are fixed in
+  `src/` on Linux, never patched in Studio and left there.
+- First-time Studio setup: install Roblox Studio + the Rojo plugin, enable
+  plugin HTTP permissions when prompted; the served DataModel mirrors
+  `default.project.json` (`Shared`/`Server`/`Client`). `tests/` and `docs/`
+  never sync into the game.
