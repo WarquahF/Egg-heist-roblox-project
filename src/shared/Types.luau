@@ -20,6 +20,7 @@ export type EggRecord = {
 export type RewardRecord = {
 	RewardId: string,
 	Rarity: string,
+	RewardType: string,
 	Name: string,
 	HatchedAt: number,
 }

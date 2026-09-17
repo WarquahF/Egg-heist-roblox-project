@@ -6,6 +6,9 @@
 
 export type EggConfig = {
 	Rarity: string,
+	-- Player-facing label (prompts, future UI). Logic keys off the config key
+	-- (EggId), never this string, so renames are art-safe.
+	DisplayName: string,
 	DistanceFromPlots: number, -- studs along the runway; bigger = rarer
 	HatchPoolId: string,
 	ChaserId: string,
@@ -15,6 +18,7 @@ export type EggConfig = {
 local Eggs: { [string]: EggConfig } = {
 	CommonEgg = {
 		Rarity = "Common",
+		DisplayName = "Common Egg",
 		DistanceFromPlots = 50,
 		HatchPoolId = "CommonPool",
 		ChaserId = "Chaser_Common",
@@ -22,6 +26,7 @@ local Eggs: { [string]: EggConfig } = {
 	},
 	RareEgg = {
 		Rarity = "Rare",
+		DisplayName = "Rare Egg",
 		DistanceFromPlots = 150,
 		HatchPoolId = "RarePool",
 		ChaserId = "Chaser_Rare",
@@ -29,6 +34,7 @@ local Eggs: { [string]: EggConfig } = {
 	},
 	EpicEgg = {
 		Rarity = "Epic",
+		DisplayName = "Epic Egg",
 		DistanceFromPlots = 300,
 		HatchPoolId = "EpicPool",
 		ChaserId = "Chaser_Epic",

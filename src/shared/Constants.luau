@@ -19,6 +19,9 @@ Constants.BASE_WALK_SPEED = 16
 Constants.WALK_SPEED_PER_LEVEL = 2
 Constants.MAX_SPEED_LEVEL = 20
 
+-- Chaser follow-loop tick (server). Tunable here, not hardcoded in the service.
+Constants.CHASER_TICK_SECONDS = 0.25
+
 -- Data.
 Constants.DATASTORE_NAME = "EggHeist_Beta_001"
 Constants.AUTOSAVE_INTERVAL_SECONDS = 120

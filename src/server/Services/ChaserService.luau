@@ -10,6 +10,7 @@ local RunService = game:GetService("RunService")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Constants = require(Shared:WaitForChild("Constants"))
 local ChaserConfig = require(Shared:WaitForChild("Config"):WaitForChild("Chasers"))
 local ValidationRules = require(Shared:WaitForChild("ValidationRules"))
 
@@ -112,7 +113,7 @@ function ChaserService.Start()
 	-- TODO(Human): replace with pathfinding + leash + stun/escape rules.
 	task.spawn(function()
 		while true do
-			task.wait(0.25)
+			task.wait(Constants.CHASER_TICK_SECONDS)
 			for eggId, userId in pairs(ChaserService._targets) do
 				if not ValidationRules.ShouldChase(userId, ChaserService._carrierOf(eggId)) then
 					-- Covers: deliver/reset already cleared the carrier, carrier

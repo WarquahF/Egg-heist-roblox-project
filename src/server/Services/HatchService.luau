@@ -41,6 +41,7 @@ local function _rollReward(poolId: string): any?
 			return {
 				RewardId = e.RewardId,
 				Rarity = e.Rarity,
+				RewardType = e.RewardType,
 				Name = e.Name,
 				HatchedAt = os.time(),
 			}
@@ -50,6 +51,7 @@ local function _rollReward(poolId: string): any?
 	return {
 		RewardId = fallback.RewardId,
 		Rarity = fallback.Rarity,
+		RewardType = fallback.RewardType,
 		Name = fallback.Name,
 		HatchedAt = os.time(),
 	}

@@ -119,7 +119,7 @@ function PlaceholderWorld.Build()
 		egg:SetAttribute("EggId", eggId)
 		local prompt = Instance.new("ProximityPrompt")
 		prompt.ActionText = "Steal"
-		prompt.ObjectText = eggId
+		prompt.ObjectText = c.DisplayName or eggId
 		prompt.HoldDuration = 0
 		prompt.MaxActivationDistance = 12
 		prompt.Name = "TakePrompt"
