@@ -10,17 +10,21 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local TrainingConfig = require(Shared:WaitForChild("Config"):WaitForChild("Training"))
 local RemoteNames = require(Shared:WaitForChild("RemoteNames"))
+local ValidationRules = require(Shared:WaitForChild("ValidationRules"))
+
+local PlotZones = require(script.Parent:WaitForChild("PlotZones"))
 
 local TrainingService = {}
-TrainingService._deps: any = nil
-TrainingService._lastTrainAt: { [number]: number } = {}
+TrainingService._deps = nil :: any
+TrainingService._lastTrainAt = {} :: { [number]: number }
 
-function TrainingService.Init(deps: { PlayerDataService: any, Remotes: any })
+function TrainingService.Init(deps: { PlayerDataService: any, PlotService: any, Remotes: any })
 	TrainingService._deps = deps
 end
 
 function TrainingService.SpeedForLevel(level: number): number
-	return Constants.BASE_WALK_SPEED + (math.clamp(level, 1, Constants.MAX_SPEED_LEVEL) - 1) * Constants.WALK_SPEED_PER_LEVEL
+	return Constants.BASE_WALK_SPEED
+		+ (math.clamp(level, 1, Constants.MAX_SPEED_LEVEL) - 1) * Constants.WALK_SPEED_PER_LEVEL
 end
 
 function TrainingService.ApplySpeed(player: Player)
@@ -33,25 +37,41 @@ function TrainingService.ApplySpeed(player: Player)
 	TrainingService._deps.Remotes.Get(RemoteNames.SpeedChanged):FireClient(player, data.SpeedLevel, data.SpeedXP)
 end
 
--- TODO(Human): add "near training pad" distance check using PlotService plot lookup.
+-- Phase 7: the client only knocks. The server decides: cooldown gate,
+-- player has a plot, character stands at THEIR OWN plot's training pad
+-- (server-measured), level below cap. XP math and WalkSpeed are server-only;
+-- there is exactly one WalkSpeed writer (ApplySpeed below).
 function TrainingService.RequestTrain(player: Player): boolean
+	local data = TrainingService._deps.PlayerDataService.GetOrDefault(player)
 	local now = os.clock()
-	local last = TrainingService._lastTrainAt[player.UserId] or 0
-	if now - last < Constants.TRAIN_COOLDOWN_SECONDS then
-		return false -- rate-limited: repeated remote spam is dropped
+	if
+		not ValidationRules.CanTrain(
+			now,
+			TrainingService._lastTrainAt[player.UserId],
+			Constants.TRAIN_COOLDOWN_SECONDS,
+			data.SpeedLevel,
+			TrainingConfig.MaxLevel
+		)
+	then
+		return false -- rate-limited spam (Scenario G) or already maxed
 	end
 	TrainingService._lastTrainAt[player.UserId] = now
 
-	local data = TrainingService._deps.PlayerDataService.GetOrDefault(player)
-	if data.SpeedLevel >= TrainingConfig.MaxLevel then
-		return false
+	local plotId = TrainingService._deps.PlotService.GetPlotForPlayer(player)
+	if plotId == nil then
+		return false -- no plot, no pad
+	end
+	if not PlotZones.IsNearOwnPlotPart(player, plotId, "TrainingPad", Constants.MAX_INTERACT_DISTANCE) then
+		return false -- must train at your own pad, not from across the map
 	end
 
-	data.SpeedXP += TrainingConfig.XPPerTrain
-	while data.SpeedXP >= TrainingConfig.XPToLevel and data.SpeedLevel < TrainingConfig.MaxLevel do
-		data.SpeedXP -= TrainingConfig.XPToLevel
-		data.SpeedLevel += 1
-	end
+	data.SpeedLevel, data.SpeedXP = ValidationRules.ApplyTrainXP(
+		data.SpeedXP,
+		data.SpeedLevel,
+		TrainingConfig.XPPerTrain,
+		TrainingConfig.XPToLevel,
+		TrainingConfig.MaxLevel
+	)
 
 	TrainingService.ApplySpeed(player)
 	return true
@@ -83,6 +103,10 @@ function TrainingService.Start()
 			end)
 		end)
 	end
+
+	Players.PlayerRemoving:Connect(function(player: Player)
+		TrainingService._lastTrainAt[player.UserId] = nil
+	end)
 end
 
 return TrainingService

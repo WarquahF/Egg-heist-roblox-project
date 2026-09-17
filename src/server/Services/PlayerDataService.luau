@@ -19,7 +19,9 @@ export type SaveData = {
 }
 
 local PlayerDataService = {}
-PlayerDataService._data: { [number]: SaveData } = {}
+PlayerDataService._data = {} :: { [number]: SaveData }
+PlayerDataService._loaded = {} :: { [number]: boolean }
+PlayerDataService._started = false
 PlayerDataService._store = nil
 
 function PlayerDataService.DefaultData(): SaveData
@@ -47,7 +49,13 @@ function PlayerDataService.GetOrDefault(player: Player): SaveData
 end
 
 -- TODO(Human): tune retry/backoff for production. Beta uses one pcall load.
+-- Guarded: loading twice never overwrites newer in-memory data, so a duplicate
+-- PlayerAdded (or a second Start) cannot wipe session progress.
 function PlayerDataService.Load(player: Player)
+	if PlayerDataService._loaded[player.UserId] then
+		return
+	end
+	PlayerDataService._loaded[player.UserId] = true
 	local store = PlayerDataService._store
 	local data = PlayerDataService.DefaultData()
 	if store ~= nil then
@@ -57,7 +65,7 @@ function PlayerDataService.Load(player: Player)
 		if ok and type(loaded) == "table" then
 			local l = loaded :: any
 			if type(l.Coins) == "number" then
-				data.Coins = l.Coins
+				data.Coins = math.max(0, math.floor(l.Coins))
 			end
 			if type(l.SpeedLevel) == "number" then
 				data.SpeedLevel = math.clamp(math.floor(l.SpeedLevel), 1, Constants.MAX_SPEED_LEVEL)
@@ -66,7 +74,14 @@ function PlayerDataService.Load(player: Player)
 				data.SpeedXP = math.max(0, math.floor(l.SpeedXP))
 			end
 			if type(l.Inventory) == "table" then
-				data.Inventory = l.Inventory
+				-- Bound table size so corrupt/huge saves can't blow DataStore limits.
+				local capped: { any } = {}
+				for index, item in l.Inventory do
+					if typeof(index) == "number" and #capped < Constants.MAX_INVENTORY_ITEMS then
+						capped[#capped + 1] = item
+					end
+				end
+				data.Inventory = capped
 			end
 			if type(l.EggsHatched) == "number" then
 				data.EggsHatched = math.max(0, math.floor(l.EggsHatched))
@@ -88,11 +103,15 @@ function PlayerDataService.Save(player: Player)
 end
 
 function PlayerDataService.AddReward(player: Player, reward: any)
-	PlayerDataService.GetOrDefault(player).Inventory[#PlayerDataService.GetOrDefault(player).Inventory + 1] =
-		reward
+	PlayerDataService.GetOrDefault(player).Inventory[#PlayerDataService.GetOrDefault(player).Inventory + 1] = reward
 end
 
 function PlayerDataService.Start()
+	if PlayerDataService._started then
+		return -- idempotent: a second Start must not spawn a second autosave loop
+	end
+	PlayerDataService._started = true
+
 	local ok, store = pcall(function()
 		return DataStoreService:GetDataStore(Constants.DATASTORE_NAME)
 	end)
@@ -108,6 +127,16 @@ function PlayerDataService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		PlayerDataService.Save(player)
 		PlayerDataService._data[player.UserId] = nil
+		PlayerDataService._loaded[player.UserId] = nil
+	end)
+
+	-- Flush on shutdown so Stop/Update doesn't drop the last minutes of play.
+	-- In Studio, BindToClose may not fire on every Stop press; autosave +
+	-- PlayerRemoving saves remain the primary durability path there.
+	game:BindToClose(function()
+		for _, player in Players:GetPlayers() do
+			PlayerDataService.Save(player)
+		end
 	end)
 
 	-- Autosave loop. Single task; cheap for Beta scale.
