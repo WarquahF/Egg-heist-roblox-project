@@ -45,13 +45,24 @@ Rules:
 
 ```text
 PlayerDataService  Load/save/defaults, AddReward. Sole DataStore user.
-PlotService        ClaimFreePlot / ReleasePlayerPlot / GetPlotForPlayer.
-TrainingService    RequestTrain (cooldown + level cap), ApplySpeed.
-EggService         RegisterEgg, RequestTakeEgg, RequestDeliverEgg, ResetEgg,
-                   MarkHatched, ReleasePlayerEggs. Fires Claimed/Freed signals.
-ChaserService      SetTargetToCarrier / ClearTarget / ClearTargetsForPlayer,
-                   BindNpc, placeholder follow loop (carrier ONLY).
-HatchService       RequestHatch (must be DELIVERED), weighted pool roll.
+                   Guarded loads, BindToClose flush, capped inventory restore.
+PlotService        ClaimFreePlot (idempotent) / ReleasePlayerPlot /
+                   GetPlotForPlayer / OwnsPlot. NOTHING else.
+TrainingService    RequestTrain (cooldown + own plot + own-pad proximity +
+                   level cap), ApplySpeed. Sole WalkSpeed writer.
+EggService         RegisterEgg, RequestTakeEgg, RequestDeliverEgg (own-plot
+                   incubator proximity, records DeliveredBy/DeliveredPlot),
+                   ResetEgg, MarkHatched, ReleasePlayerEggs. Fires Claimed/Freed.
+ChaserService      SetTargetToCarrier (verified vs carrier) / ClearTarget /
+                   ClearTargetsForPlayer, BindNpc, follow loop with per-tick
+                   carrier re-verification + stale-target sweep (carrier ONLY).
+HatchService       RequestHatch (DELIVERED + delivered-by-me + delivered-to-my-
+                   plot + hatch cooldown), server-side pool roll.
+PlotZones          (server helper, not a service) own-plot part lookup +
+                   server-measured proximity for Egg/Training services.
+ValidationRules    (shared, pure) CanClaim/CanDeliver/CanHatch/CanTrain/
+                   ApplyTrainXP/ShouldChase/SanitizeEggId — the single decision
+                   point Services call and specs cover.
 ```
 
 Wiring (in `ServerMain.server.luau`): `EggService.Claimed → ChaserService.SetTargetToCarrier`,
@@ -71,6 +82,10 @@ CARRIED -> AVAILABLE  (drop / carrier left / reset)
 
 - Lives in `src/shared/EggStateMachine.luau` (pure, dependency-free, unit-tested).
 - `EggService` is the only writer; every mutation goes through `AssertTransition`.
+- Delivery additionally records `DeliveredByUserId`/`DeliveredPlotId` (server-side
+  provenance); `ResetEgg` clears them. `HatchService` requires them to match the
+  hatching player and their plot — this is what makes cross-player and double
+  hatches impossible, on top of the state check.
 - `HATCHED` is terminal in Beta. To respawn eggs, add an explicit `RESPAWNING`
   state + timer in `EggService` (do NOT silently reset HATCHED → AVAILABLE; keep
   the transition table honest). Test in `tests/EggStateMachine.spec.luau`.
@@ -81,11 +96,16 @@ CARRIED -> AVAILABLE  (drop / carrier left / reset)
 
 The critical invariant: **`ChaserService._targets[eggId] == CarrierUserId`**.
 
-- Set ONLY in `ServerMain` from `EggService.Claimed(player, eggId)`.
+- Set ONLY in `ServerMain` from `EggService.Claimed(player, eggId)`, and
+  `SetTargetToCarrier` re-checks the egg's recorded carrier first (stale signals
+  are dropped, never applied).
 - Cleared on deliver / reset / carrier-leave (`EggService.Freed`, `PlayerRemoving`).
-- The follow loop iterates `_targets` and `MoveTo`s the CARRIER's position.
+- The follow loop re-verifies `target == carrier` against `EggService` EVERY tick
+  and clears on any divergence, including targets whose player left the game.
   There is deliberately NO nearest-player search anywhere in the file — if you add
   pathfinding/leash/stun later, keep reading the target from this table.
+- The targeting question itself is the pure `ValidationRules.ShouldChase`, covered
+  by `tests/ValidationRules.spec.luau` (nearby/other-carrier/ex-carrier all false).
 - `GetTarget(eggId)` exists so tests and debug commands can assert the relation.
 
 ---
@@ -102,11 +122,21 @@ S -> C : InventoryUpdated | PlotAssigned | EggStateChanged | SpeedChanged
 Server creates them at boot (`Remotes.EnsureAll`); client waits for them
 (`ClientRemotes.Get`). Every C→S handler validates, in order:
 
-1. Argument types sane (`typeof(eggId) == "string"`)
-2. Rate limit (cooldown per player)
-3. Game state (`AVAILABLE`? already carrying? correct `CarrierUserId`?)
-4. Proximity (`MAX_INTERACT_DISTANCE`; plot check is a marked TODO)
+1. Sanitize input (`ValidationRules.SanitizeEggId`; reject empties/non-strings)
+2. Rate limit (per-player cooldown per action: train/take/deliver/hatch)
+3. Ownership from SERVER state (plot via `PlotService`, carrier/state via `EggService`)
+4. Proximity, server-measured (`PlotZones` vs own plot's pad/incubator, or egg part)
 5. Mutate + broadcast (one `FireClient`/`FireAllClients` per change, not per frame)
+
+Ownership rules (all server-derived; the client sends NO PlotId, ever):
+
+- Deliver: egg `CARRIED` by caller + caller has a plot + caller stands at THAT
+  plot's `Incubator`. No plot, wrong place, or someone else's egg → reject.
+- Hatch: egg `DELIVERED` + `DeliveredByUserId == caller` + `DeliveredPlotId ==
+  caller's plot`. Cross-player, early, or repeat hatch → reject.
+- Train: cooldown + caller has a plot + caller stands at THAT plot's
+  `TrainingPad` + below max level. Speed/XP math is server-only.
+- Rejections return `false` and change nothing; malformed input never errors.
 
 ---
 
@@ -125,21 +155,37 @@ The dev placeholder map (4 plots, runway, 3 eggs, 3 chasers) builds itself on fi
 run via `DEV_BUILD_PLACEHOLDERS` in `ServerMain`. Set it to `false` once the real
 map exists — Services only need `EggId`/`ChaserId`/`PlotId` attributes + prompts.
 
-Lint/format before pushing:
+Lint/format/test gates (pinned versions in `aftman.toml`; `aftman install` first):
 
 ```bash
-stylua src tests
-selene src tests
+stylua --check src tests   # format gate (StyLua 2.0.2)
+selene src tests           # lint gate (Selene 0.27.1, std "roblox")
+rojo build default.project.json -o /tmp/eggheist.rbxlx  # project-mapping gate
 ```
+
+Heads-up: the pinned StyLua predates `Table.field: Type = value` annotations, so
+service state uses `= value :: Type` casts instead — same types, older syntax.
+Pinned Selene ships no `testez` std, so spec files carry one adjacent
+`-- selene: allow(undefined_variable)` line (must directly precede the code;
+a blank line breaks its scope in 0.27.1). Do not "fix" either by upgrading
+around the pins; update `aftman.toml` deliberately if you outgrow them.
 
 ---
 
 ## 8. How to test
 
-- Unit: `tests/EggStateMachine.spec.luau` (TestEZ in Studio). Covers happy path,
-  resets, and rejected transitions like `HATCHED → CARRIED`.
+- Unit (TestEZ in Studio): `tests/EggStateMachine.spec.luau` (happy path, resets,
+  full invalid-jump matrix incl. `HATCHED → CARRIED`, unknown states) and
+  `tests/ValidationRules.spec.luau` (sanitize, duplicate claims, cross-player
+  delivery/hatch rejection, double-hatch rejection, train cooldown/XP math,
+  carrier-only targeting).
+- Headless (Linux, no Studio): the pure modules are dependency-free, so
+  `lune run` executes the same expectations — 67 assertions green at last check.
+  Studio TestEZ remains the gate for the in-engine suite.
 - Manual Beta: `docs/BETA_CHECKLIST.md` — single player, 2–4 players, edge cases
-  (leave-while-carrying, double-claim, spam, far interact, hatch-with-nothing).
+  (leave-while-carrying, double-claim, spam, far interact, hatch-with-nothing)
+  plus the Security section (cross-player deliver/hatch, double hatch, stale
+  chaser, train/deliver-from-afar).
 - Headless CI is a TODO: current `.gitlab-ci.yml` only asserts the foundation files
   exist. Do not claim CI covers gameplay until TestEZ runs headless.
 
@@ -157,9 +203,11 @@ selene src tests
 IDs only (see §11). `HatchService` rolls weights automatically.
 
 **New service:** create `src/server/Services/<Name>Service.luau` with
-`Init(deps)`/`Start()`, require it ONLY in `ServerMain.server.luau`, passdeps
+`Init(deps)`/`Start()`, require it ONLY in `ServerMain.server.luau`, pass deps
 explicitly, and use signals for cross-service events. Do not `require` another
-service directly. Document its ownership in §3 above.
+service directly (the one exception is a read-only verifier dep like
+`ChaserService → EggService`, wired in `ServerMain`). Document its ownership
+in §3 above. New ownership questions go in `ValidationRules` FIRST, with specs.
 
 ---
 
@@ -171,6 +219,8 @@ service directly. Document its ownership in §3 above.
 - Push, open a Merge Request, fill in: what loop step it touches, how you
   playtested (players count), checklist results. Keep MRs small enough to review
   in one sitting. `main` stays playable: the Beta loop must not regress.
+- Run the §7 gates before pushing (`stylua --check`, `selene`, `rojo build`).
+  A red gate blocks the MR the same way a failing checklist item does.
 
 ---
 

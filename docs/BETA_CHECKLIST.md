@@ -31,6 +31,20 @@ until headless TestEZ CI exists (see `DEVELOPMENT.md` → Testing).
 - [ ] Interact from far away (>12 studs) → rejected
 - [ ] HATCHED → CARRIED never happens (state machine)
 
+## Security / ownership (server-authoritative; verify from a SECOND client or the
+command bar firing forged remotes — all must reject with no state change)
+
+- [ ] A carries egg → B fires `RequestDeliverEgg` for it → rejected, A still carrier
+- [ ] A delivers egg → B fires `RequestHatch` for it → rejected, egg still DELIVERED
+- [ ] A delivers egg → A fires `RequestHatch` twice → first succeeds, second rejected
+- [ ] A fires `RequestHatch` for a CARRIED (not delivered) egg → rejected
+- [ ] A stands at B's incubator (or anywhere wild) and fires `RequestDeliverEgg` → rejected
+- [ ] A fires `RequestTrain` from across the map (not at own pad) → rejected, no XP
+- [ ] A with no plot (full server) fires train/deliver/hatch → all rejected
+- [ ] Forged payloads (`nil`, numbers, tables, `""`, 65+ char strings) → rejected, no errors
+- [ ] Chaser keeps following A when B stands closer, after deliver goes idle and
+  NEVER re-acquires A or B on its own (leave + rejoin while targeted also clears)
+
 ## Performance sanity
 
 - [ ] Output has no errors after a full loop with 4 clients

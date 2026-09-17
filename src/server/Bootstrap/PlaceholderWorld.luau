@@ -17,7 +17,7 @@ local function _part(props: { [string]: any }, parent: Instance): BasePart
 	local p = Instance.new("Part")
 	for key, value in props do
 		if key ~= "Parent" then
-			(p :: any)[key] = value;
+			(p :: any)[key] = value
 		end
 	end
 	p.Anchored = true
