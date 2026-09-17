@@ -21,8 +21,7 @@ local HatchService = require(Services:WaitForChild("HatchService"))
 
 -- Dev world must exist BEFORE services scan workspace for EggId tags.
 if DEV_BUILD_PLACEHOLDERS then
-	local PlaceholderWorld =
-		require(Server:WaitForChild("Bootstrap"):WaitForChild("PlaceholderWorld"))
+	local PlaceholderWorld = require(Server:WaitForChild("Bootstrap"):WaitForChild("PlaceholderWorld"))
 	PlaceholderWorld.Build()
 end
 
@@ -50,8 +49,8 @@ Players.PlayerAdded:Connect(function(player: Player)
 	end
 end)
 
-EggService.Init({ Remotes = Remotes })
-ChaserService.Init()
+EggService.Init({ Remotes = Remotes, PlotService = PlotService })
+ChaserService.Init({ EggService = EggService }) -- read-only verifier, no cycle
 
 -- THE critical wiring: carrier -> target. Never nearest-player.
 local claimed = EggService.Claimed
@@ -70,7 +69,7 @@ end
 EggService.Start()
 ChaserService.Start()
 
-TrainingService.Init({ PlayerDataService = PlayerDataService, Remotes = Remotes })
+TrainingService.Init({ PlayerDataService = PlayerDataService, PlotService = PlotService, Remotes = Remotes })
 TrainingService.Start()
 
 HatchService.Init({

@@ -10,30 +10,47 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Constants = require(Shared:WaitForChild("Constants"))
 local EggStateMachine = require(Shared:WaitForChild("EggStateMachine"))
 local RemoteNames = require(Shared:WaitForChild("RemoteNames"))
+local ValidationRules = require(Shared:WaitForChild("ValidationRules"))
+
+local PlotZones = require(script.Parent:WaitForChild("PlotZones"))
 
 export type EggRecord = {
 	EggId: string,
 	State: string,
 	CarrierUserId: number?,
+	-- Server-recorded delivery provenance (never client-provided).
+	DeliveredByUserId: number?,
+	DeliveredPlotId: string?,
 }
 
 local EggService = {}
-EggService._deps: any = nil
-EggService._eggs: { [string]: EggRecord } = {}
-EggService._carriedBy: { [number]: string } = {} -- UserId -> EggId (one egg at a time)
-EggService._lastTakeAt: { [number]: number } = {}
-EggService.Claimed: BindableEvent? = nil
-EggService.Freed: BindableEvent? = nil
+EggService._deps = nil :: any
+EggService._eggs = {} :: { [string]: EggRecord }
+EggService._carriedBy = {} :: { [number]: string } -- UserId -> EggId (one egg at a time)
+EggService._parts = {} :: { [string]: BasePart } -- EggId -> world part (cached at registration)
+EggService._lastTakeAt = {} :: { [number]: number }
+EggService._lastDeliverAt = {} :: { [number]: number }
+EggService.Claimed = nil :: BindableEvent?
+EggService.Freed = nil :: BindableEvent?
 
-function EggService.Init(deps: { Remotes: any })
+function EggService.Init(deps: { Remotes: any, PlotService: any })
 	EggService._deps = deps
 	EggService.Claimed = Instance.new("BindableEvent")
 	EggService.Freed = Instance.new("BindableEvent")
 end
 
-function EggService.RegisterEgg(eggId: string)
+function EggService.RegisterEgg(eggId: string, part: BasePart?)
 	if EggService._eggs[eggId] == nil then
-		EggService._eggs[eggId] = { EggId = eggId, State = "AVAILABLE", CarrierUserId = nil }
+		EggService._eggs[eggId] = {
+			EggId = eggId,
+			State = "AVAILABLE",
+			CarrierUserId = nil,
+			DeliveredByUserId = nil,
+			DeliveredPlotId = nil,
+		}
+	end
+	if part ~= nil then
+		EggService._parts[eggId] = part
 	end
 end
 
@@ -65,10 +82,17 @@ local function _playerRoot(player: Player): BasePart?
 end
 
 local function _eggPart(eggId: string): BasePart?
-	-- PlaceholderWorld tags each egg Part with attribute EggId; humans keep the
-	-- convention or replace this lookup with their own registry.
+	-- Cached at registration; the scan below is a fallback for parts added
+	-- without a reference (e.g. hand-built maps), and it re-caches on hit.
+	-- One part per EggId: duplicate EggId tags are a map bug, surfaced by the
+	-- first-registered part winning here.
+	local cached = EggService._parts[eggId]
+	if cached ~= nil and cached.Parent ~= nil then
+		return cached
+	end
 	for _, descendant in workspace:GetDescendants() do
 		if descendant:IsA("BasePart") and descendant:GetAttribute("EggId") == eggId then
+			EggService._parts[eggId] = descendant
 			return descendant
 		end
 	end
@@ -76,7 +100,6 @@ local function _eggPart(eggId: string): BasePart?
 end
 
 local function _withinRange(player: Player, eggId: string): boolean
-	-- TODO(Human): replace linear scan with a per-egg cached Part reference.
 	local root = _playerRoot(player)
 	local part = _eggPart(eggId)
 	if root == nil or part == nil then
@@ -85,9 +108,23 @@ local function _withinRange(player: Player, eggId: string): boolean
 	return (root.Position - part.Position).Magnitude <= Constants.MAX_INTERACT_DISTANCE
 end
 
+-- Server-measured "standing at my own incubator". PlotId comes from
+-- PlotService state; distance is measured server-side. The client is never
+-- asked where it is or which plot it means.
+local function _atOwnIncubator(player: Player): (boolean, string?)
+	local plotId = EggService._deps.PlotService.GetPlotForPlayer(player)
+	if plotId == nil then
+		return false, nil
+	end
+	local near = PlotZones.IsNearOwnPlotPart(player, plotId, "Incubator", Constants.MAX_INTERACT_DISTANCE)
+	return near, plotId
+end
+
 -- Validation order matters (cheap checks first, exploited checks always).
-function EggService.RequestTakeEgg(player: Player, eggId: string): boolean
-	if typeof(eggId) ~= "string" or eggId == "" then
+-- Every rejection returns false WITHOUT changing state.
+function EggService.RequestTakeEgg(player: Player, eggId: any): boolean
+	local id = ValidationRules.SanitizeEggId(eggId)
+	if id == nil then
 		return false
 	end
 	local now = os.clock()
@@ -96,45 +133,63 @@ function EggService.RequestTakeEgg(player: Player, eggId: string): boolean
 	end
 	EggService._lastTakeAt[player.UserId] = now
 
-	local egg = EggService._eggs[eggId]
-	if egg == nil or egg.State ~= "AVAILABLE" then
+	local egg = EggService._eggs[id]
+	local state = if egg then egg.State else nil
+	if not ValidationRules.CanClaim(state, EggService._carriedBy[player.UserId] ~= nil) then
+		return false -- nonexistent, not AVAILABLE (Scenario A loser), or already carrying
+	end
+	if not _withinRange(player, id) then
 		return false
 	end
-	if EggService._carriedBy[player.UserId] ~= nil then
-		return false -- already carrying one egg
-	end
-	if not _withinRange(player, eggId) then
-		return false
-	end
+	assert(egg ~= nil, "CanClaim passed so the egg exists")
 
 	_setState(egg, "CLAIMED", player.UserId)
-	EggService._carriedBy[player.UserId] = eggId
+	EggService._carriedBy[player.UserId] = id
 	-- Beta simplification: CLAIMED -> CARRIED immediately (attach visual next).
 	_setState(egg, "CARRIED", player.UserId)
 
 	local claimed = EggService.Claimed
 	if claimed ~= nil then
-		claimed:Fire(player, eggId)
+		claimed:Fire(player, id)
 	end
 	return true
 end
 
--- TODO(Human): verify the player is inside THEIR OWN plot incubator zone.
-function EggService.RequestDeliverEgg(player: Player, eggId: string): boolean
-	local egg = EggService._eggs[eggId]
-	if egg == nil or egg.State ~= "CARRIED" or egg.CarrierUserId ~= player.UserId then
+-- Phase 2/11: delivery is valid ONLY at the carrier's OWN plot incubator.
+-- Required chain: sanitized id -> deliver cooldown -> CARRIED-by-caller ->
+-- caller owns a plot -> caller stands at that plot's incubator (server-measured).
+function EggService.RequestDeliverEgg(player: Player, eggId: any): boolean
+	local id = ValidationRules.SanitizeEggId(eggId)
+	if id == nil then
 		return false
 	end
+	local now = os.clock()
+	if now - (EggService._lastDeliverAt[player.UserId] or 0) < Constants.DELIVER_EGG_COOLDOWN_SECONDS then
+		return false
+	end
+	EggService._lastDeliverAt[player.UserId] = now
+
+	local egg = EggService._eggs[id]
+	local state = if egg then egg.State else nil
+	local carrier = if egg then egg.CarrierUserId else nil
+	local nearIncubator, plotId = _atOwnIncubator(player) -- nil plot or far away -> both answers reject below
+	if egg == nil or not ValidationRules.CanDeliver(player.UserId, carrier, state, plotId, nearIncubator) then
+		return false -- covers Scenario B (another player's egg), no plot, wrong location
+	end
+
 	EggService._carriedBy[player.UserId] = nil
+	egg.DeliveredByUserId = player.UserId
+	egg.DeliveredPlotId = plotId
 	_setState(egg, "DELIVERED", nil)
 	local freed = EggService.Freed
 	if freed ~= nil then
-		freed:Fire(eggId)
+		freed:Fire(id)
 	end
 	return true
 end
 
 -- Returns the egg to AVAILABLE (drop / carrier left / chase reset).
+-- Clears carrier AND delivery provenance so no stale ownership survives.
 function EggService.ResetEgg(eggId: string)
 	local egg = EggService._eggs[eggId]
 	if egg == nil or egg.State == "AVAILABLE" or egg.State == "HATCHED" then
@@ -143,6 +198,9 @@ function EggService.ResetEgg(eggId: string)
 	if egg.CarrierUserId ~= nil then
 		EggService._carriedBy[egg.CarrierUserId] = nil
 	end
+	egg.CarrierUserId = nil
+	egg.DeliveredByUserId = nil
+	egg.DeliveredPlotId = nil
 	-- Route through legal transitions so the state machine stays honest.
 	if egg.State == "CLAIMED" or egg.State == "CARRIED" then
 		_setState(egg, "AVAILABLE", nil)
@@ -172,6 +230,7 @@ function EggService.ReleasePlayerEggs(player: Player)
 		EggService.ResetEgg(eggId)
 	end
 	EggService._lastTakeAt[player.UserId] = nil
+	EggService._lastDeliverAt[player.UserId] = nil
 end
 
 function EggService.Start()
@@ -190,7 +249,7 @@ function EggService.Start()
 	-- Auto-register placeholder eggs tagged with EggId attribute (dev convenience).
 	for _, descendant in workspace:GetDescendants() do
 		if descendant:IsA("BasePart") and typeof(descendant:GetAttribute("EggId")) == "string" then
-			EggService.RegisterEgg(descendant:GetAttribute("EggId") :: string)
+			EggService.RegisterEgg(descendant:GetAttribute("EggId") :: string, descendant)
 		end
 	end
 	workspace.DescendantAdded:Connect(function(descendant: Instance)
@@ -198,7 +257,7 @@ function EggService.Start()
 			task.defer(function()
 				local id = descendant:GetAttribute("EggId")
 				if typeof(id) == "string" then
-					EggService.RegisterEgg(id)
+					EggService.RegisterEgg(id, descendant)
 				end
 			end)
 		end

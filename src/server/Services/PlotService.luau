@@ -11,7 +11,7 @@ local PlotConfig = require(Shared:WaitForChild("Config"):WaitForChild("Plots"))
 
 local PlotService = {}
 -- PlotId -> UserId (nil = free)
-PlotService._owners: { [string]: number? } = {}
+PlotService._owners = {} :: { [string]: number? }
 
 function PlotService.Init()
 	for _, plotId in PlotConfig.PlotIds do
@@ -20,7 +20,12 @@ function PlotService.Init()
 end
 
 -- First free plot wins. Returns nil when the server is full (Beta: 4 plots).
+-- Idempotent: a player who already owns a plot gets it back, never a second one.
 function PlotService.ClaimFreePlot(player: Player): string?
+	local existing = PlotService.GetPlotForPlayer(player)
+	if existing ~= nil then
+		return existing
+	end
 	for _, plotId in PlotConfig.PlotIds do
 		if PlotService._owners[plotId] == nil then
 			PlotService._owners[plotId] = player.UserId
@@ -49,6 +54,20 @@ end
 
 function PlotService.GetOwner(plotId: string): number?
 	return PlotService._owners[plotId]
+end
+
+-- Server-authoritative ownership answer. Services ask THIS, never the client.
+function PlotService.OwnsPlot(player: Player, plotId: string): boolean
+	return PlotService._owners[plotId] == player.UserId
+end
+
+function PlotService.IsKnownPlot(plotId: string): boolean
+	for _, known in PlotConfig.PlotIds do
+		if known == plotId then
+			return true
+		end
+	end
+	return false
 end
 
 function PlotService.Start()

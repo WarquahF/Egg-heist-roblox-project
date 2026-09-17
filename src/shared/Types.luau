@@ -10,6 +10,10 @@ export type EggRecord = {
 	State: EggState,
 	-- UserId of the carrier while CLAIMED/CARRIED, nil otherwise.
 	CarrierUserId: number?,
+	-- Set on delivery (server-derived, never client-provided). HatchService
+	-- requires these to match the hatching player and their plot.
+	DeliveredByUserId: number?,
+	DeliveredPlotId: string?,
 	PlotId: string?,
 }
 
